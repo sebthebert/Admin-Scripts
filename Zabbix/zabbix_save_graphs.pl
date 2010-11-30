@@ -6,7 +6,7 @@ zabbix_save_graphs.pl
 
 =head1 DESCRIPTION
 
-Saves Graph pictures from one Zabbix Screen
+Saves PNG Graph pictures from Zabbix Web Interface
 
 =head1 SYNOPSIS
 
@@ -363,6 +363,8 @@ Debug("Disconnecting...\n");
 $mech->get("$opt_url/index.php?reconnect=1");
 
 =head1 CHANGELOG
+
+0.9.1 Fix script Description
 
 0.9 Initial release
 
