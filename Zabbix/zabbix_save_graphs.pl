@@ -92,7 +92,7 @@ Readonly my $TREE_GROUPID => '0.1.6.0.1.0.0.1.0.4';
 Readonly my $TREE_HOSTID  => '0.1.6.0.1.0.0.1.0.6';
 Readonly my $TREE_GRAPHID => '0.1.6.0.1.0.0.1.0.8';
 
-our $VERSION = '0.9.2';
+our $VERSION = '0.9.3';
 
 my ($opt_debug, $opt_help, $opt_url, $opt_login, $opt_password, $opt_graph_list,
     $opt_screen, $opt_period)
@@ -189,6 +189,13 @@ sub Graph_Ids
     my $selector_group = $tree->address($TREE_GRAPHID);
     my $html           = $selector_group->as_HTML;
     %graph_id = ($html =~ / title="(.+?)" value="(\d+)"/g);
+    foreach my $k (keys %graph_id)
+    {
+    	my $value = $graph_id{$k};
+    	delete $graph_id{$k};
+    	$k =~ s/&amp;/&/g;
+    	$graph_id{$k} = $value;
+    }
 
     return (undef);
 }
@@ -290,6 +297,7 @@ sub Save_Graphs_From_List
     my @graphs = ();
 
     Group_Ids();
+    my ($last_groupname, $last_hostname) = ('', '');
     if (defined open my $file_list, '<', $opt_graph_list)
     {
         while (<$file_list>)
@@ -300,12 +308,12 @@ sub Save_Graphs_From_List
 
                 if (defined $group_id{$groupname})
                 {
-                    Host_Ids($group_id{$groupname});
-
+                    Host_Ids($group_id{$groupname}) if ($last_groupname ne $groupname);
+                    $last_groupname = $groupname;
                     if (defined $host_id{$hostname})
                     {
-                        Graph_Ids($group_id{$groupname}, $host_id{$hostname});
-
+                        Graph_Ids($group_id{$groupname}, $host_id{$hostname}) if ($last_hostname ne $hostname);
+                        $last_hostname = $hostname;
                         if (defined $graph_id{$graphtitle})
                         {
                             my ($groupid, $hostid, $graphid) = (
@@ -431,6 +439,8 @@ Debug("Disconnecting...\n");
 $mech->get("$opt_url/index.php?reconnect=1");
 
 =head1 CHANGELOG
+
+0.9.3 Speed improvement
 
 0.9.2 Graph Pictures sent by mail 
 
