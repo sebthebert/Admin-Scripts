@@ -11,7 +11,9 @@ Saves PNG Graph pictures from Zabbix Web Interface
 =head1 SYNOPSIS
 
 zabbix_save_graphs.pl --url <zabbix_url> --login <login> --password <password> 
-    [--screen <screen name>|--graph_list <graph_list_file>] [--duration] [--debug]
+    [--screen <screen name>|--graph_list <graph_list_file>] [--period] 
+    [--mail_src mail_src_address] [--mail_dest mail_dest_address] 
+    [--debug]
 
 =head1 OPTIONS
 
@@ -51,13 +53,23 @@ Period (in seconds)
 
 Default value 86400 (1 day). You can also use d/day/w/week/m/month words.
 
+=item B<--mail_src>
+
+Email address of the sender
+
+=item B<--mail_dest>
+
+Email address(es) where you want to send graphs
+
+Could be "someone@domain.com" or coma separated addresses list "a1@domain.com,a2@domain.com"
+
 =back
 
 =head1 EXAMPLES
 
-zabbix_save_screen_graphs.pl --url http://127.0.0.1 --login me --password pwd --graph_list list.conf --duration 1w
+zabbix_save_graphs.pl --url http://127.0.0.1 --login me --password pwd --graph_list list.conf --period 1w
 
-zabbix_save_screen_graphs.pl --url http://127.0.0.1 --login me --password pwd --screen 'my awesome screen' --duration 1month
+zabbix_save_graphs.pl --url http://127.0.0.1 --login me --password pwd --screen 'my awesome screen' --period 1month --mail_src zabbix@mydomain.org --mail_dest me@mydomain.org,someone@mydomain.org
 
 =cut
 
@@ -70,17 +82,22 @@ Getopt::Long::Configure('bundling');
 use Pod::Usage;
 
 use HTML::TreeBuilder;
+use Mail::Sender;
 use WWW::Mechanize;
 
+Readonly my $MAIL_SUBJECT => 'Zabbix Graphs';
+Readonly my $MAIL_MESSAGE => 'Zabbix Graphs';
+Readonly my $SMTP_SERVER  => '127.0.0.1';
 Readonly my $TREE_GROUPID => '0.1.6.0.1.0.0.1.0.4';
 Readonly my $TREE_HOSTID  => '0.1.6.0.1.0.0.1.0.6';
 Readonly my $TREE_GRAPHID => '0.1.6.0.1.0.0.1.0.8';
 
-our $VERSION = '0.9';
+our $VERSION = '0.9.2';
 
 my ($opt_debug, $opt_help, $opt_url, $opt_login, $opt_password, $opt_graph_list,
     $opt_screen, $opt_period)
     = (undef, undef, undef, undef, undef, undef, undef, undef);
+my ($opt_mail_src, $opt_mail_dest) = (undef, undef);
 
 my %group_id    = ();
 my %host_id     = ();
@@ -125,7 +142,7 @@ sub Group_Ids
 {
     Debug("Getting Group Ids...\n");
     $mech->get("$opt_url/charts.php");
-    $mech->submit_form(fields => {groupid => 0});
+    $mech->submit_form(form_id => 'node_form', fields => {groupid => 0});
     my $tree           = HTML::TreeBuilder->new_from_content($mech->content());
     my $selector_group = $tree->address($TREE_GROUPID);
     my $html           = $selector_group->as_HTML;
@@ -229,11 +246,14 @@ Save Graphs from Screen
 
 sub Save_Graphs_From_Screen
 {
-    my $period = shift;
+    my $period   = shift;
+    my @graphs   = ();
+    my $nb_graph = 1;
 
     Graph_Titles();
     Debug("Going to 'Screen' page...\n");
-    $mech->follow_link(text => 'Screens');
+    die "[ERROR] Unable to going to 'Screen' page"
+        if (!defined $mech->follow_link(text => 'Screens'));
 
     Debug("Selecting Screen '%s'...\n", $opt_screen);
     my $content = $mech->content();
@@ -243,7 +263,6 @@ sub Save_Graphs_From_Screen
     $mech->submit_form(fields => {elementid => $screen_id});
 
     my @links = $mech->find_all_links(url_regex => qr/charts\.php\?graphid=/);
-    my $nb_graph = 0;
     foreach my $l (@links)
     {
         my $graph_url = $l->url();
@@ -254,10 +273,11 @@ sub Save_Graphs_From_Screen
         $mech->get("$opt_url/$graph_url");
         my $data = $mech->content();
         Save_Graph_PNG("graph_${opt_screen}_${nb_graph}.png", \$data);
+        push @graphs, "graph_${opt_screen}_${nb_graph}.png";
         $nb_graph++;
     }
 
-    return ($nb_graph);
+    return (\@graphs);
 }
 
 =head2 Save_Graphs_From_List
@@ -267,8 +287,8 @@ sub Save_Graphs_From_Screen
 sub Save_Graphs_From_List
 {
     my $period = shift;
+    my @graphs = ();
 
-    my $nb_graph = 0;
     Group_Ids();
     if (defined open my $file_list, '<', $opt_graph_list)
     {
@@ -277,29 +297,56 @@ sub Save_Graphs_From_List
             if ($_ =~ /^Group\[(.+?)\]:Host\[(.+?)\]:Graph\[(.+?)\]/)
             {
                 my ($groupname, $hostname, $graphtitle) = ($1, $2, $3);
-                Host_Ids($group_id{$groupname});
-                Graph_Ids($group_id{$groupname}, $host_id{$hostname});
 
-                my ($groupid, $hostid, $graphid) = (
-                    $group_id{$groupname}, $host_id{$hostname},
-                    $graph_id{$graphtitle},
-                );
-                Debug("Graph => %s / %s / %s\n",
-                    $groupname, $hostname, $graphtitle);
-                $mech->get("$opt_url/charts.php");
-                $mech->submit_form(
-                    fields => {
-                        groupid => $groupid,
-                        hostid  => $hostid,
-                        graphid => $graphid,
+                if (defined $group_id{$groupname})
+                {
+                    Host_Ids($group_id{$groupname});
+
+                    if (defined $host_id{$hostname})
+                    {
+                        Graph_Ids($group_id{$groupname}, $host_id{$hostname});
+
+                        if (defined $graph_id{$graphtitle})
+                        {
+                            my ($groupid, $hostid, $graphid) = (
+                                $group_id{$groupname}, $host_id{$hostname},
+                                $graph_id{$graphtitle},
+                            );
+                            Debug("Graph => %s / %s / %s\n",
+                                $groupname, $hostname, $graphtitle);
+                            $mech->get("$opt_url/charts.php");
+                            $mech->submit_form(
+                                fields => {
+                                    groupid => $groupid,
+                                    hostid  => $hostid,
+                                    graphid => $graphid,
+                                }
+                            );
+                            $mech->get(
+"$opt_url/chart2.php?graphid=${graphid}&period=${period}"
+                            );
+                            my $data = $mech->content();
+                            Save_Graph_PNG(
+"graph_${groupname}_${hostname}_${graphtitle}.png",
+                                \$data
+                            );
+                            push @graphs,
+"graph_${groupname}_${hostname}_${graphtitle}.png";
+                        }
+                        else
+                        {
+                            printf("[ERROR] Unknown Graph '$graphtitle'\n");
+                        }
                     }
-                );
-                $mech->get(
-                    "$opt_url/chart2.php?graphid=${graphid}&period=${period}");
-                my $data = $mech->content();
-                Save_Graph_PNG(
-                    "graph_${groupname}_${hostname}_${graphtitle}.png", \$data);
-                $nb_graph++;
+                    else
+                    {
+                        printf("[ERROR] Unknown Host '$hostname'\n");
+                    }
+                }
+                else
+                {
+                    printf("[ERROR] Unknown Group '$groupname'\n");
+                }
             }
         }
         close $file_list;
@@ -309,7 +356,7 @@ sub Save_Graphs_From_List
         printf("[ERROR] Unable to open graphs list '$opt_graph_list'\n");
     }
 
-    return ($nb_graph);
+    return (\@graphs);
 }
 
 =head2 MAIN
@@ -324,8 +371,11 @@ my $status = GetOptions(
     'graph_list=s' => \$opt_graph_list,
     'screen=s'     => \$opt_screen,
     'period=s'     => \$opt_period,
+    'mail_src=s'   => \$opt_mail_src,
+    'mail_dest=s'  => \$opt_mail_dest,
     'debug'        => \$opt_debug,
 );
+
 pod2usage(-verbose => 99, -sections => ['SYNOPSIS', 'OPTIONS', 'EXAMPLES'])
     if ((!$status)
     || (!defined $opt_url)
@@ -348,21 +398,41 @@ Debug("Connection to Zabbix Server %s...\n", $opt_url);
 $mech->get($opt_url);
 
 Debug("Filling Login & Password...\n");
-$mech->submit_form(fields => {name => $opt_login, password => $opt_password});
+$mech->field('name',     $opt_login,    1);
+$mech->field('password', $opt_password, 1);
+$mech->click_button(name => 'enter');
+
+my $graph_files;
 
 if (defined $opt_screen)
 {
-    Save_Graphs_From_Screen($period);
+    $graph_files = Save_Graphs_From_Screen($period);
 }
 else
 {
-    Save_Graphs_From_List($period);
+    $graph_files = Save_Graphs_From_List($period);
+}
+
+if ((defined $opt_mail_src) && (defined $opt_mail_dest))
+{
+    Debug("Sending files by mail...\n");
+    my $sender = new Mail::Sender {smtp => $SMTP_SERVER, from => $opt_mail_src};
+    $sender->MailFile(
+        {
+            to      => $opt_mail_dest,
+            subject => $MAIL_SUBJECT,
+            msg     => $MAIL_MESSAGE,
+            file    => $graph_files
+        }
+    );
 }
 
 Debug("Disconnecting...\n");
 $mech->get("$opt_url/index.php?reconnect=1");
 
 =head1 CHANGELOG
+
+0.9.2 Graph Pictures sent by mail 
 
 0.9.1 Fix script Description
 
