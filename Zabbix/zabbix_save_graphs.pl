@@ -92,7 +92,7 @@ Readonly my $TREE_GROUPID => '0.1.6.0.1.0.0.1.0.4';
 Readonly my $TREE_HOSTID  => '0.1.6.0.1.0.0.1.0.6';
 Readonly my $TREE_GRAPHID => '0.1.6.0.1.0.0.1.0.8';
 
-our $VERSION = '0.9.3';
+our $VERSION = '0.9.4';
 
 my ($opt_debug, $opt_help, $opt_url, $opt_login, $opt_password, $opt_graph_list,
     $opt_screen, $opt_period)
@@ -191,10 +191,10 @@ sub Graph_Ids
     %graph_id = ($html =~ / title="(.+?)" value="(\d+)"/g);
     foreach my $k (keys %graph_id)
     {
-    	my $value = $graph_id{$k};
-    	delete $graph_id{$k};
-    	$k =~ s/&amp;/&/g;
-    	$graph_id{$k} = $value;
+        my $value = $graph_id{$k};
+        delete $graph_id{$k};
+        $k =~ s/&amp;/&/g;
+        $graph_id{$k} = $value;
     }
 
     return (undef);
@@ -278,9 +278,11 @@ sub Save_Graphs_From_Screen
         $graph_url =~ s/period=(\d+)/period=$period/;
         Debug("Link: %s -> %s -> %s\n", $gid, $graph_title{$gid}, $graph_url);
         $mech->get("$opt_url/$graph_url");
-        my $data = $mech->content();
-        Save_Graph_PNG("graph_${opt_screen}_${nb_graph}.png", \$data);
-        push @graphs, "graph_${opt_screen}_${nb_graph}.png";
+        my $data     = $mech->content();
+        my $filename = "graph_${opt_screen}_${nb_graph}.png";
+        $filename =~ s/[ :]/_/g;
+        Save_Graph_PNG($filename, \$data);
+        push @graphs, $filename;
         $nb_graph++;
     }
 
@@ -308,11 +310,13 @@ sub Save_Graphs_From_List
 
                 if (defined $group_id{$groupname})
                 {
-                    Host_Ids($group_id{$groupname}) if ($last_groupname ne $groupname);
+                    Host_Ids($group_id{$groupname})
+                        if ($last_groupname ne $groupname);
                     $last_groupname = $groupname;
                     if (defined $host_id{$hostname})
                     {
-                        Graph_Ids($group_id{$groupname}, $host_id{$hostname}) if ($last_hostname ne $hostname);
+                        Graph_Ids($group_id{$groupname}, $host_id{$hostname})
+                            if ($last_hostname ne $hostname);
                         $last_hostname = $hostname;
                         if (defined $graph_id{$graphtitle})
                         {
@@ -334,12 +338,11 @@ sub Save_Graphs_From_List
 "$opt_url/chart2.php?graphid=${graphid}&period=${period}"
                             );
                             my $data = $mech->content();
-                            Save_Graph_PNG(
-"graph_${groupname}_${hostname}_${graphtitle}.png",
-                                \$data
-                            );
-                            push @graphs,
+                            my $filename =
 "graph_${groupname}_${hostname}_${graphtitle}.png";
+                            $filename =~ s/[ :]/_/g;
+                            Save_Graph_PNG($filename, \$data);
+                            push @graphs, $filename;
                         }
                         else
                         {
@@ -439,6 +442,8 @@ Debug("Disconnecting...\n");
 $mech->get("$opt_url/index.php?reconnect=1");
 
 =head1 CHANGELOG
+
+0.9.4 Remove ' ' & ':' from graph filenames
 
 0.9.3 Speed improvement
 
